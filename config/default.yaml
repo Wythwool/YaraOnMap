@@ -1,0 +1,21 @@
+engine:
+  # 'external' uses yara.exe found in PATH. Future: 'yarax' for pure Rust.
+  type: external
+  yara_path: "yara64.exe"
+
+scan:
+  page_bytes: 65536
+  timeout_ms: 500
+  proc_budget_ms: 2000
+  cache_ttl_ms: 60000
+  max_workers: 4
+  priorities:
+    exec: 3
+    write: 2
+    read: 1
+
+mode: audit   # 'audit' or 'enforce' (enforce triggers quarantine VirtualProtectEx)
+metrics:
+  listen: "127.0.0.1:9207"
+logging:
+  level: info
