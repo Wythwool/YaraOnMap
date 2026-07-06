@@ -15,12 +15,20 @@ pub struct ScanCfg {
     pub priorities: Priorities,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Priorities { pub exec: u8, pub write: u8, pub read: u8 }
+pub struct Priorities {
+    pub exec: u8,
+    pub write: u8,
+    pub read: u8,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricsCfg { pub listen: String }
+pub struct MetricsCfg {
+    pub listen: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogCfg { pub level: String }
+pub struct LogCfg {
+    pub level: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppCfg {

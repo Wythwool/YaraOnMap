@@ -1,6 +1,6 @@
 [package]
 name = "yara_on_map"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "User-mode Windows memory map scanner with YARA-on-map and quarantine."
@@ -24,10 +24,12 @@ rayon = "1.10.0"
 hex = "0.4.3"
 cfg-if = "1.0.0"
 uuid = { version = "1.10.0", features = ["v4"] }
+tempfile = "3.10.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.59.0", features = [
   "Win32_System_Memory",
+  "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Threading",
   "Win32_System_SystemInformation",

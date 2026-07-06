@@ -41,9 +41,9 @@ yom self-check
 - ETW is not required; the watcher polls `VirtualQueryEx` for deterministic new regions.
 - Quarantine is in-memory only, no file changes.
 - Rules are standard YARA. Example provided: `examples/rules/mz.yar`.
+- CI runs Rust formatting, clippy, tests, and a release build on Windows.
 
 License: MIT.
-
 
 
 

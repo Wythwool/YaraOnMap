@@ -1,0 +1,9 @@
+/target/
+/.idea/
+/.vscode/
+*.pdb
+*.log
+*.jsonl
+*.tmp
+*.temp
+
