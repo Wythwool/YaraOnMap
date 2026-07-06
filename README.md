@@ -36,6 +36,13 @@ yom self-check
 - Scan: `page_bytes` (default 64KiB), cache TTL, workers, priorities by protection.
 - Mode: `audit` or `enforce`.
 
+## YARA engine behavior
+
+- `yom` checks that the rules file exists and that the configured YARA executable starts before scanning.
+- The scanner calls YARA on a temporary page file and records the matched rule names from normal CLI output.
+- A hung YARA process is killed after the configured timeout and reported as a scan error.
+- Replay tests skip automatically when `yara64.exe` is not installed, so CI can still validate the Rust code path.
+
 ## Notes
 
 - ETW is not required; the watcher polls `VirtualQueryEx` for deterministic new regions.
@@ -44,6 +51,5 @@ yom self-check
 - CI runs Rust formatting, clippy, tests, and a release build on Windows.
 
 License: MIT.
-
 
 
