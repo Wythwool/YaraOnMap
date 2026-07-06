@@ -148,6 +148,7 @@ pub fn scan_process_pages(
     pid: u32,
     rules: &YaraExternal,
     page_bytes: usize,
+    proc_budget: Duration,
     cache: &PageCache,
     reg: &Registry,
 ) -> Result<Vec<Finding>> {
@@ -162,7 +163,14 @@ pub fn scan_process_pages(
         }
         let iter = page_iter(h, page_bytes);
         let mut out = Vec::new();
+        let started = Instant::now();
         for (base, size, _prot, prot_str, kind) in iter {
+            if started.elapsed() >= proc_budget {
+                reg.inc_process_budget_exceeded();
+                log::warn!("process scan budget exceeded for pid={pid}");
+                break;
+            }
+
             if let Some(buf) = read_page(h, base, page_bytes) {
                 if cache.check(pid, base, &buf) {
                     reg.inc_skipped();
@@ -186,7 +194,10 @@ pub fn scan_process_pages(
                         }
                     }
                     Ok(_) => {}
-                    Err(_e) => {}
+                    Err(err) => {
+                        reg.inc_page_scan_errors();
+                        log::warn!("page scan failed for pid={pid} base=0x{base:x}: {err}");
+                    }
                 }
             }
         }
@@ -195,6 +206,7 @@ pub fn scan_process_pages(
     }
     #[cfg(not(windows))]
     {
+        let _ = proc_budget;
         Ok(vec![])
     }
 }

@@ -291,10 +291,17 @@ fn main() -> Result<()> {
                 cfg.scan.timeout_ms,
             )?;
             let reg = Registry::new();
-            let (tx_stop, rx_stop) = bounded::<()>(1);
-            serve_http(listen, rx_stop, reg.clone());
             let cache = PageCache::new(cfg.scan.cache_ttl_ms);
-            let sched = Scheduler::new(eng, cache, reg.clone(), cfg.scan.page_bytes);
+            let sched = Scheduler::new(
+                eng,
+                cache,
+                reg.clone(),
+                cfg.scan.page_bytes,
+                cfg.scan.max_workers,
+                cfg.scan.proc_budget_ms,
+            )?;
+            let (tx_stop, rx_stop) = bounded::<()>(1);
+            let metrics_thread = serve_http(listen, rx_stop, reg.clone())?;
 
             let start = std::time::Instant::now();
             loop {
@@ -323,6 +330,9 @@ fn main() -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             let _ = tx_stop.send(());
+            if metrics_thread.join().is_err() {
+                bail!("metrics server thread panicked");
+            }
             Ok(())
         }
         Cmd::Replay {

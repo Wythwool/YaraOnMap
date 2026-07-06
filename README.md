@@ -34,7 +34,7 @@ yom self-check --config config/default.yaml --rules examples/rules/mz.yar [--che
 ## Config (`config/default.yaml`)
 
 - Engine: `external` via `yara64.exe` (from Chocolatey). Timeout per page and per-process budget.
-- Scan: `page_bytes` (default 64KiB), cache TTL, workers, priorities by protection.
+- Scan: `page_bytes` (default 64KiB), cache TTL, worker count, per-process budget, priorities by protection.
 - Mode: `audit` or `enforce`.
 - Config is validated before a scan starts; invalid mode, empty YARA path, zero scan limits, bad metrics address, and bad log level fail fast.
 
@@ -52,6 +52,7 @@ yom self-check --config config/default.yaml --rules examples/rules/mz.yar [--che
 - ETW is not required; the watcher polls `VirtualQueryEx` for deterministic new regions.
 - Quarantine is in-memory only, no file changes.
 - Rules are standard YARA. Example provided: `examples/rules/mz.yar`.
+- Metrics include scanned pages, cache skips, findings, quarantines, page scan errors, process scan errors, and process budget stops.
 - CI runs Rust formatting, clippy, tests, and a release build on Windows.
 
 License: MIT.

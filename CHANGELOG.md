@@ -8,6 +8,7 @@
 - Hardened external YARA startup checks, scan timeouts, output parsing, and related unit tests.
 - Hardened CLI replay parsing, PID validation, JSONL output errors, and replay YARA options.
 - Added configuration validation and a useful self-check command for config, rules, and optional YARA startup checks.
+- Made scheduler worker limits and process scan budgets active, and exposed scan/runtime errors in metrics.
 
 ## v0.1.0 - 2025-10-22
 - First release. User-mode Windows memory map scanner with page-wise YARA, caching, priorities, timeouts, and quarantine.
