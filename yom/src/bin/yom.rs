@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
 use yara_on_map::config::AppCfg;
 use yara_on_map::engine::YaraExternal;
 use yara_on_map::metrics::{serve_http, Registry};
@@ -11,7 +12,7 @@ use yara_on_map::watcher::build_tasks;
 use crossbeam_channel::bounded;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -57,31 +58,169 @@ enum Cmd {
         /// Path to YARA rules
         #[arg(long, default_value = "examples/rules/mz.yar")]
         rules: PathBuf,
+        /// Path to YARA executable
+        #[arg(long, default_value = "yara64.exe")]
+        yara: String,
+        /// YARA timeout per replay page
+        #[arg(long, default_value_t = 500u64)]
+        timeout_ms: u64,
     },
     /// Basic self-check
     SelfCheck,
 }
 
-fn parse_pids(s: &str) -> Vec<u32> {
-    if s.trim().is_empty() {
-        return vec![];
-    }
-    if s == "self" {
-        return vec![std::process::id()];
-    }
-    s.split(',')
-        .filter_map(|x| x.trim().parse::<u32>().ok())
-        .collect()
+#[derive(Debug, Deserialize)]
+struct ReplayFile {
+    pid: ReplayPid,
+    pages: Vec<ReplayPage>,
 }
 
-fn write_jsonl(out: &Option<PathBuf>, fs: &[Finding]) {
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ReplayPid {
+    Text(String),
+    Number(u64),
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplayPage {
+    base: String,
+    data_hex: String,
+}
+
+fn parse_pids(s: &str) -> Result<Vec<u32>> {
+    if s.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    if s.trim().eq_ignore_ascii_case("self") {
+        return Ok(vec![std::process::id()]);
+    }
+
+    let mut pids = Vec::new();
+    for raw in s.split(',') {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let pid = value
+            .parse::<u32>()
+            .with_context(|| format!("invalid PID `{value}`"))?;
+        pids.push(pid);
+    }
+
+    Ok(pids)
+}
+
+fn write_jsonl(out: &Option<PathBuf>, findings: &[Finding]) -> Result<()> {
     if let Some(p) = out {
-        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(p) {
-            for x in fs {
-                let _ = writeln!(f, "{}", serde_json::to_string(x).unwrap());
-            }
+        if let Some(parent) = p.parent().filter(|path| !path.as_os_str().is_empty()) {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create output directory {}", parent.display())
+            })?;
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .with_context(|| format!("failed to open JSONL output {}", p.display()))?;
+        for finding in findings {
+            serde_json::to_writer(&mut file, finding)
+                .with_context(|| format!("failed to serialize finding for {}", p.display()))?;
+            writeln!(file).with_context(|| format!("failed to write {}", p.display()))?;
         }
     }
+    Ok(())
+}
+
+fn load_replay_file(path: &Path) -> Result<ReplayFile> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read replay file {}", path.display()))?;
+    let replay: ReplayFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse replay file {}", path.display()))?;
+    if replay.pages.is_empty() {
+        bail!("replay file {} has no pages", path.display());
+    }
+    Ok(replay)
+}
+
+fn resolve_replay_pid(pid: ReplayPid) -> Result<u32> {
+    match pid {
+        ReplayPid::Text(value) if value.trim().eq_ignore_ascii_case("self") => {
+            Ok(std::process::id())
+        }
+        ReplayPid::Text(value) => parse_pid_text(&value),
+        ReplayPid::Number(value) => u32::try_from(value)
+            .with_context(|| format!("replay PID {value} is outside the u32 range")),
+    }
+}
+
+fn parse_pid_text(value: &str) -> Result<u32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("PID is empty");
+    }
+
+    trimmed
+        .parse::<u32>()
+        .with_context(|| format!("invalid PID `{trimmed}`"))
+}
+
+fn parse_base(value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("base address is empty");
+    }
+
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u64::from_str_radix(hex, 16)
+            .with_context(|| format!("invalid hex base address `{trimmed}`"));
+    }
+
+    trimmed
+        .parse::<u64>()
+        .with_context(|| format!("invalid base address `{trimmed}`"))
+}
+
+fn decode_hex_page(value: &str) -> Result<Vec<u8>> {
+    let compact: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    hex::decode(&compact).with_context(|| "invalid replay page hex data".to_string())
+}
+
+fn replay_findings(replay: ReplayFile, eng: &YaraExternal) -> Result<Vec<Finding>> {
+    let pid = resolve_replay_pid(replay.pid)?;
+    let cache = PageCache::new(60_000);
+    let mut findings = Vec::new();
+
+    for (index, page) in replay.pages.into_iter().enumerate() {
+        let base = parse_base(&page.base)
+            .with_context(|| format!("invalid base on replay page {}", index + 1))?;
+        let bytes = decode_hex_page(&page.data_hex)
+            .with_context(|| format!("invalid data on replay page {}", index + 1))?;
+
+        if cache.check(pid, base, &bytes) {
+            continue;
+        }
+
+        let hits = eng
+            .scan_bytes(&bytes)
+            .with_context(|| format!("YARA scan failed for replay page 0x{base:x}"))?;
+        for rule in hits {
+            findings.push(Finding {
+                pid,
+                base,
+                size: bytes.len(),
+                rule: rule.clone(),
+                severity: "high".into(),
+                message: format!("match {} at 0x{:x}", rule, base),
+            });
+        }
+    }
+
+    Ok(findings)
 }
 
 fn main() -> Result<()> {
@@ -102,6 +241,7 @@ fn main() -> Result<()> {
             } else {
                 AppCfg::default()
             };
+            let pid_filter = parse_pids(&pids)?;
             let eng = YaraExternal::new(
                 cfg.engine.yara_path.clone(),
                 rules.clone(),
@@ -115,12 +255,11 @@ fn main() -> Result<()> {
 
             let start = std::time::Instant::now();
             loop {
-                let pid_list = parse_pids(&pids);
                 let tasks = build_tasks(
-                    if pid_list.is_empty() {
+                    if pid_filter.is_empty() {
                         None
                     } else {
-                        Some(pid_list)
+                        Some(pid_filter.clone())
                     },
                     &cfg.scan.priorities,
                 );
@@ -130,7 +269,7 @@ fn main() -> Result<()> {
                     if enforce || cfg.mode == "enforce" {
                         yara_on_map::quarantine::quarantine(&findings, &reg);
                     }
-                    write_jsonl(&jsonl, &findings);
+                    write_jsonl(&jsonl, &findings)?;
                 }
                 if duration == 0 {
                     break;
@@ -143,44 +282,15 @@ fn main() -> Result<()> {
             let _ = tx_stop.send(());
             Ok(())
         }
-        Cmd::Replay { file, rules } => {
-            let data = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&file)?)?;
-            let pid = if data["pid"].as_str() == Some("self") {
-                std::process::id()
-            } else {
-                data["pid"].as_u64().unwrap_or(0) as u32
-            };
-            let eng = YaraExternal::new("yara64.exe".into(), rules, 500)?;
-            let cache = yara_on_map::pager::PageCache::new(60_000);
-            let mut findings = Vec::new();
-            if let Some(arr) = data["pages"].as_array() {
-                for it in arr {
-                    let base = u64::from_str_radix(
-                        it["base"].as_str().unwrap().trim_start_matches("0x"),
-                        16,
-                    )
-                    .unwrap();
-                    let bytes = hex::decode(it["data_hex"].as_str().unwrap()).unwrap();
-                    if cache.check(pid, base, &bytes) {
-                        continue;
-                    }
-                    match eng.scan_bytes(&bytes) {
-                        Ok(hits) if !hits.is_empty() => {
-                            for rule in hits {
-                                findings.push(yara_on_map::types::Finding {
-                                    pid,
-                                    base,
-                                    size: bytes.len(),
-                                    rule: rule.clone(),
-                                    severity: "high".into(),
-                                    message: format!("match {} at 0x{:x}", rule, base),
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        Cmd::Replay {
+            file,
+            rules,
+            yara,
+            timeout_ms,
+        } => {
+            let replay = load_replay_file(&file)?;
+            let eng = YaraExternal::new(yara, rules, timeout_ms)?;
+            let findings = replay_findings(replay, &eng)?;
             for f in findings.iter() {
                 println!("{}", serde_json::to_string(f)?);
             }
@@ -190,5 +300,62 @@ fn main() -> Result<()> {
             println!("OK");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_finding() -> Finding {
+        Finding {
+            pid: 7,
+            base: 0x1000,
+            size: 4,
+            rule: "mz_header".to_string(),
+            severity: "high".to_string(),
+            message: "match mz_header at 0x1000".to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_pids_accepts_lists_and_self() {
+        assert_eq!(parse_pids("12, 34").expect("pid list"), vec![12, 34]);
+        assert_eq!(
+            parse_pids("self").expect("self pid"),
+            vec![std::process::id()]
+        );
+    }
+
+    #[test]
+    fn parse_pids_rejects_bad_values() {
+        let err = parse_pids("12, nope").unwrap_err();
+
+        assert!(err.to_string().contains("invalid PID"));
+    }
+
+    #[test]
+    fn replay_base_accepts_hex_and_decimal() {
+        assert_eq!(parse_base("0x1000").expect("hex"), 0x1000);
+        assert_eq!(parse_base("4096").expect("decimal"), 4096);
+    }
+
+    #[test]
+    fn replay_hex_allows_whitespace() {
+        assert_eq!(
+            decode_hex_page("4D 5A\n90").expect("hex bytes"),
+            vec![0x4d, 0x5a, 0x90]
+        );
+    }
+
+    #[test]
+    fn write_jsonl_creates_parent_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("findings.jsonl");
+
+        write_jsonl(&Some(path.clone()), &[sample_finding()]).expect("write jsonl");
+
+        let content = fs::read_to_string(path).expect("read jsonl");
+        assert!(content.contains("\"rule\":\"mz_header\""));
     }
 }

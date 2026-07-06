@@ -6,6 +6,7 @@
 - Moved tests into package-level Cargo test targets.
 - Fixed the CLI JSONL writer to use the standard library file appender.
 - Hardened external YARA startup checks, scan timeouts, output parsing, and related unit tests.
+- Hardened CLI replay parsing, PID validation, JSONL output errors, and replay YARA options.
 
 ## v0.1.0 - 2025-10-22
 - First release. User-mode Windows memory map scanner with page-wise YARA, caching, priorities, timeouts, and quarantine.
