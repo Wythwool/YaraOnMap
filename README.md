@@ -23,7 +23,7 @@ scripts/dev-run.ps1
 ```
 yom run    --config config/default.yaml --rules examples/rules/mz.yar --pids self --duration 5 --listen 127.0.0.1:9207 [--jsonl out/findings.jsonl] [--enforce]
 yom replay --file examples/replay/mapping_sample.json --rules examples/rules/mz.yar [--yara yara64.exe] [--timeout-ms 500]
-yom self-check
+yom self-check --config config/default.yaml --rules examples/rules/mz.yar [--check-yara]
 ```
 
 - `--pids`: `self` or comma-separated PIDs. Empty = all.
@@ -36,6 +36,7 @@ yom self-check
 - Engine: `external` via `yara64.exe` (from Chocolatey). Timeout per page and per-process budget.
 - Scan: `page_bytes` (default 64KiB), cache TTL, workers, priorities by protection.
 - Mode: `audit` or `enforce`.
+- Config is validated before a scan starts; invalid mode, empty YARA path, zero scan limits, bad metrics address, and bad log level fail fast.
 
 ## YARA engine behavior
 
@@ -44,6 +45,7 @@ yom self-check
 - A hung YARA process is killed after the configured timeout and reported as a scan error.
 - Replay tests skip automatically when `yara64.exe` is not installed, so CI can still validate the Rust code path.
 - Replay accepts a custom YARA executable path and timeout, which makes local and CI runs easier to reproduce.
+- `self-check` validates config and rules by default; `--check-yara` also starts the configured YARA executable.
 
 ## Notes
 
@@ -53,4 +55,3 @@ yom self-check
 - CI runs Rust formatting, clippy, tests, and a release build on Windows.
 
 License: MIT.
-

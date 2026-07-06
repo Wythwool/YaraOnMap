@@ -12,7 +12,10 @@ use yara_on_map::watcher::build_tasks;
 use crossbeam_channel::bounded;
 use std::fs;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+
+const DEFAULT_CONFIG_PATH: &str = "config/default.yaml";
 
 #[derive(Parser)]
 #[command(
@@ -29,7 +32,7 @@ struct Cli {
 enum Cmd {
     /// Run live scanner
     Run {
-        #[arg(long, default_value = "config/default.yaml")]
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
         config: PathBuf,
         /// Path to YARA rules file
         #[arg(long, default_value = "examples/rules/mz.yar")]
@@ -65,8 +68,17 @@ enum Cmd {
         #[arg(long, default_value_t = 500u64)]
         timeout_ms: u64,
     },
-    /// Basic self-check
-    SelfCheck,
+    /// Validate local configuration and inputs
+    SelfCheck {
+        #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
+        config: PathBuf,
+        /// Path to YARA rules file
+        #[arg(long, default_value = "examples/rules/mz.yar")]
+        rules: PathBuf,
+        /// Also start the configured YARA executable
+        #[arg(long, default_value_t = false)]
+        check_yara: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +121,40 @@ fn parse_pids(s: &str) -> Result<Vec<u32>> {
     }
 
     Ok(pids)
+}
+
+fn load_config(path: &Path) -> Result<AppCfg> {
+    let cfg = if path.exists() {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read config {}", path.display()))?;
+        serde_yaml::from_str::<AppCfg>(&raw)
+            .with_context(|| format!("failed to parse config {}", path.display()))?
+    } else if path == Path::new(DEFAULT_CONFIG_PATH) {
+        AppCfg::default()
+    } else {
+        bail!("config file not found: {}", path.display());
+    };
+
+    cfg.validate()
+        .with_context(|| format!("invalid config {}", path.display()))?;
+    Ok(cfg)
+}
+
+fn validate_listen(value: &str) -> Result<()> {
+    value
+        .trim()
+        .parse::<SocketAddr>()
+        .with_context(|| format!("invalid listen address `{value}`"))?;
+    Ok(())
+}
+
+fn validate_rules_file(path: &Path) -> Result<()> {
+    let meta = fs::metadata(path)
+        .with_context(|| format!("YARA rules file is not readable: {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("YARA rules path is not a file: {}", path.display());
+    }
+    Ok(())
 }
 
 fn write_jsonl(out: &Option<PathBuf>, findings: &[Finding]) -> Result<()> {
@@ -236,11 +282,8 @@ fn main() -> Result<()> {
             jsonl,
             enforce,
         } => {
-            let cfg: AppCfg = if config.exists() {
-                serde_yaml::from_str(&std::fs::read_to_string(&config)?)?
-            } else {
-                AppCfg::default()
-            };
+            let cfg = load_config(&config)?;
+            validate_listen(&listen)?;
             let pid_filter = parse_pids(&pids)?;
             let eng = YaraExternal::new(
                 cfg.engine.yara_path.clone(),
@@ -296,7 +339,23 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::SelfCheck => {
+        Cmd::SelfCheck {
+            config,
+            rules,
+            check_yara,
+        } => {
+            let cfg = load_config(&config)?;
+            validate_rules_file(&rules)?;
+            if check_yara {
+                let _ = YaraExternal::new(
+                    cfg.engine.yara_path.clone(),
+                    rules.clone(),
+                    cfg.scan.timeout_ms,
+                )?;
+                println!("yara: OK");
+            }
+            println!("config: OK");
+            println!("rules: OK");
             println!("OK");
             Ok(())
         }
@@ -332,6 +391,22 @@ mod tests {
         let err = parse_pids("12, nope").unwrap_err();
 
         assert!(err.to_string().contains("invalid PID"));
+    }
+
+    #[test]
+    fn load_config_rejects_missing_custom_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing.yaml");
+
+        let err = load_config(&missing).unwrap_err();
+        assert!(err.to_string().contains("config file not found"));
+    }
+
+    #[test]
+    fn validate_listen_rejects_missing_port() {
+        let err = validate_listen("127.0.0.1").unwrap_err();
+
+        assert!(err.to_string().contains("invalid listen address"));
     }
 
     #[test]
